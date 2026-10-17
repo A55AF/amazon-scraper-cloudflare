@@ -1,5 +1,5 @@
 import { D1Database } from "@cloudflare/workers-types";
-import { getTrackedProducts, insertScrapedBuffer, ScraperBufferRow } from "./db";
+import { getTrackedProductsForScraping, markProductScraped, insertScrapedBuffer, ScraperBufferRow } from "./db";
 import { getProductDetails } from "./endpoints/product";
 import { AmazonFetcher } from "./fetcher";
 
@@ -12,9 +12,11 @@ export interface CronRunResult {
 
 export async function runScrapingCron(
   db: D1Database,
-  fetcher?: AmazonFetcher
+  fetcher?: AmazonFetcher,
+  batchSize = 8,
+  delayBetweenMs?: number
 ): Promise<CronRunResult> {
-  const tracked = await getTrackedProducts(db);
+  const tracked = await getTrackedProductsForScraping(db, batchSize);
   const result: CronRunResult = {
     total: tracked.length,
     scraped: 0,
@@ -22,7 +24,17 @@ export async function runScrapingCron(
     errors: []
   };
 
-  for (const item of tracked) {
+  for (let i = 0; i < tracked.length; i++) {
+    const item = tracked[i];
+
+    // Add random jitter delay between requests to prevent burst bot-detection
+    if (i > 0) {
+      const waitMs = delayBetweenMs !== undefined ? delayBetweenMs : 1500 + Math.floor(Math.random() * 1000);
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
     try {
       const data = await getProductDetails({
         product: item.asin,
@@ -65,6 +77,9 @@ export async function runScrapingCron(
     } catch (err: any) {
       result.failed++;
       result.errors.push({ asin: item.asin, error: err.message || String(err) });
+    } finally {
+      // Rotate this product to the back of the queue (even on error) to prevent starving other items
+      await markProductScraped(db, item.asin, item.country || "EG").catch(() => {});
     }
   }
 

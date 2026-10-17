@@ -6,6 +6,7 @@ export interface TrackedProductRow {
   title?: string | null;
   added_at?: string;
   updated_at?: string;
+  last_scraped_at?: string | null;
 }
 
 export interface ScraperBufferRow {
@@ -49,9 +50,15 @@ export async function initDb(db: D1Database): Promise<void> {
         title TEXT,
         added_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        last_scraped_at TEXT,
         PRIMARY KEY (asin, country)
       )
     `).run();
+
+    // Migration in case table already existed without last_scraped_at
+    try {
+      await db.prepare("ALTER TABLE tracked_products ADD COLUMN last_scraped_at TEXT").run();
+    } catch (_) {}
 
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS scraper_buffer (
@@ -121,6 +128,35 @@ export async function getTrackedProducts(db: D1Database): Promise<TrackedProduct
   await initDb(db);
   const result = await db.prepare("SELECT * FROM tracked_products ORDER BY updated_at DESC").all<TrackedProductRow>();
   return result.results || [];
+}
+
+export async function getTrackedProductsForScraping(
+  db: D1Database,
+  limit = 8
+): Promise<TrackedProductRow[]> {
+  await initDb(db);
+  const result = await db
+    .prepare(
+      `SELECT asin, country, title, added_at, updated_at, last_scraped_at 
+       FROM tracked_products 
+       ORDER BY last_scraped_at ASC NULLS FIRST, updated_at DESC 
+       LIMIT ?`
+    )
+    .bind(limit)
+    .all<TrackedProductRow>();
+  return result.results || [];
+}
+
+export async function markProductScraped(
+  db: D1Database,
+  asin: string,
+  country: string
+): Promise<void> {
+  await initDb(db);
+  await db
+    .prepare("UPDATE tracked_products SET last_scraped_at = CURRENT_TIMESTAMP WHERE asin = ? AND country = ?")
+    .bind(asin.toUpperCase().trim(), (country || "EG").toUpperCase().trim())
+    .run();
 }
 
 export async function deleteTrackedProduct(

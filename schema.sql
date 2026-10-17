@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS tracked_products (
   title TEXT,
   added_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
   updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  last_scraped_at TEXT,
   PRIMARY KEY (asin, country)
 );
 

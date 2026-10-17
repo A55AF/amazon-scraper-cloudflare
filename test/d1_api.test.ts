@@ -103,4 +103,18 @@ describe("D1 API Endpoints & Auth", () => {
     const data2 = (await resp2.json()) as any;
     expect(data2.count).toBe(0);
   });
+
+  it("handles scheduled micro-batch scraping cleanly", async () => {
+    const mockDb = createMockD1();
+    const env = { DB: mockDb };
+
+    // Trigger scheduled event
+    const ctx = {
+      waitUntil: (promise: Promise<any>) => promise,
+      passThroughOnException: () => {}
+    };
+
+    await expect(worker.scheduled({} as any, env, ctx as any)).resolves.not.toThrow();
+  });
 });
+
