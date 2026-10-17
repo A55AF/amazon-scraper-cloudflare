@@ -1,8 +1,16 @@
+import { D1Database, ScheduledEvent } from "@cloudflare/workers-types";
 import { getProductDetails, getProductOffers } from "./endpoints/product";
 import { getSellerDetails } from "./endpoints/seller";
 import { searchProducts } from "./endpoints/search";
 import { AmazonFetcher } from "./fetcher";
 import { paginateEnvelope } from "./shared";
+import {
+  upsertTrackedProducts,
+  getTrackedProducts,
+  deleteTrackedProduct,
+  consumeBuffer
+} from "./db";
+import { runScrapingCron } from "./cron";
 import {
   AmazonNotFoundError,
   AmazonBlockedError,
@@ -15,6 +23,8 @@ export * from "./types";
 export * from "./sites";
 export * from "./refs";
 export * from "./fetcher";
+export * from "./db";
+export * from "./cron";
 export * from "./parsers/helpers";
 export * from "./parsers/product";
 export * from "./parsers/offers";
@@ -26,6 +36,8 @@ export * from "./endpoints/search";
 
 export interface Env {
   AMAZON_PROXY?: string;
+  DB?: D1Database;
+  MORAQEB_API_KEY?: string;
   [key: string]: any;
 }
 
@@ -33,7 +45,10 @@ const ENDPOINTS = [
   "/products/details",
   "/products/offers",
   "/sellers/details",
-  "/search"
+  "/search",
+  "/api/tracked-products",
+  "/api/buffer/consume",
+  "/api/cron/trigger"
 ];
 
 function jsonResponse(data: any, status = 200): Response {
@@ -42,10 +57,22 @@ function jsonResponse(data: any, status = 200): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, OPTIONS",
+      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers": "*"
     }
   });
+}
+
+function checkAuth(request: Request, env: Env): Response | null {
+  if (env.MORAQEB_API_KEY) {
+    const key =
+      request.headers.get("x-moraqeb-key") ||
+      request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    if (!key || key !== env.MORAQEB_API_KEY) {
+      return jsonResponse({ error: "Unauthorized: Invalid or missing API key" }, 401);
+    }
+  }
+  return null;
 }
 
 export default {
@@ -54,7 +81,7 @@ export default {
       return new Response(null, {
         headers: {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET, OPTIONS",
+          "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
           "access-control-allow-headers": "*"
         }
       });
@@ -71,6 +98,60 @@ export default {
       });
     }
 
+    // --- D1 & Cron API Endpoints ---
+    if (path.startsWith("/api/")) {
+      const authErr = checkAuth(request, env);
+      if (authErr) return authErr;
+
+      if (!env.DB) {
+        return jsonResponse({ error: "D1 Database 'DB' is not bound in wrangler environment" }, 500);
+      }
+
+      if (path === "/api/tracked-products") {
+        if (request.method === "POST") {
+          try {
+            const body = (await request.json()) as any;
+            const items = Array.isArray(body)
+              ? body
+              : Array.isArray(body?.products)
+              ? body.products
+              : [body];
+            const count = await upsertTrackedProducts(env.DB, items);
+            return jsonResponse({ success: true, count });
+          } catch (e: any) {
+            return jsonResponse({ error: `Failed to save tracked products: ${e.message}` }, 400);
+          }
+        }
+        if (request.method === "GET") {
+          const rows = await getTrackedProducts(env.DB);
+          return jsonResponse({ count: rows.length, products: rows });
+        }
+        if (request.method === "DELETE") {
+          const asin = url.searchParams.get("asin");
+          const country = url.searchParams.get("country");
+          if (!asin) {
+            return jsonResponse({ error: "asin query parameter required" }, 400);
+          }
+          const deleted = await deleteTrackedProduct(env.DB, asin, country);
+          return jsonResponse({ success: deleted });
+        }
+      }
+
+      if (path === "/api/buffer/consume" && request.method === "GET") {
+        const rows = await consumeBuffer(env.DB);
+        return jsonResponse({ count: rows.length, products: rows });
+      }
+
+      if (path === "/api/cron/trigger" && request.method === "POST") {
+        const fetcher = new AmazonFetcher(env.AMAZON_PROXY || null);
+        const result = await runScrapingCron(env.DB, fetcher);
+        return jsonResponse({ success: true, ...result });
+      }
+
+      return jsonResponse({ error: `Not found: ${rawPath}` }, 404);
+    }
+
+    // --- Standard Scraper Endpoints ---
     const queryParams: Record<string, string> = {};
     for (const [k, v] of url.searchParams.entries()) {
       queryParams[k] = v;
@@ -170,5 +251,11 @@ export default {
       }
       return jsonResponse({ error: `${err.name || "Error"}: ${err.message}` }, 500);
     }
+  },
+
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.DB) return;
+    const fetcher = new AmazonFetcher(env.AMAZON_PROXY || null);
+    ctx.waitUntil(runScrapingCron(env.DB, fetcher));
   }
 };

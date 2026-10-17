@@ -6,5 +6,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "moraqeb-D1",
+      "database_id": "cd9befab-7bb7-41e9-9de9-e3e5ca57bca3"
+    }
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
   }
 }
