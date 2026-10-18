@@ -98,10 +98,11 @@ export default {
       });
     }
 
+    const authErr = checkAuth(request, env);
+    if (authErr) return authErr;
+
     // --- D1 & Cron API Endpoints ---
     if (path.startsWith("/api/")) {
-      const authErr = checkAuth(request, env);
-      if (authErr) return authErr;
 
       if (!env.DB) {
         return jsonResponse({ error: "D1 Database 'DB' is not bound in wrangler environment" }, 500);

@@ -57,4 +57,21 @@ describe("helpers", () => {
     ).toBe("541966");
     expect(snake("Best Sellers Rank")).toBe("best_sellers_rank");
   });
+
+  it("parses Arabic numbers, currencies, ratings, and Unicode keys", () => {
+    expect(money("١٬٢٩٩٫٠٠ ج.م.", "EGP")).toEqual({
+      amount: 1299.0,
+      currency: "EGP"
+    });
+    expect(money("1,299.00 جنيه", "EGP")?.currency).toBe("EGP");
+    expect(money("ر.س 450.00", "SAR")).toEqual({
+      amount: 450.0,
+      currency: "SAR"
+    });
+    expect(ratingOf("٤٫٥ من ٥ نجوم")).toBe(4.5);
+    expect(ratingOf("4.2 من 5")).toBe(4.2);
+    expect(toInt("٩٣ تقييم")).toBe(93);
+    expect(boughtPastMonth("تم شراء 1K+ في الشهر الماضي")).toBe(1000);
+    expect(snake("العلامة التجارية")).toBe("العلامة_التجارية");
+  });
 });

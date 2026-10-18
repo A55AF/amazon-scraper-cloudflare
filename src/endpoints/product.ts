@@ -56,7 +56,8 @@ export async function getProductDetails(params: ProductDetailsParams): Promise<P
       break;
     }
     if (reviewTreatment(html) === "T1" && attempt < 1) {
-      // Retry once if T1 treatment lacking reviews
+      // Drop sticky session before retrying so Amazon can assign treatment C
+      fetcher.dropSession(site.country, locale);
       continue;
     }
   }

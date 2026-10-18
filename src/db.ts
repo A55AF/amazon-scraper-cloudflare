@@ -34,7 +34,6 @@ export interface ScraperBufferRow {
   is_best_seller?: number;
   is_amazon_choice?: number;
   bought_past_month?: number | null;
-  raw_json?: string | null;
   scraped_at?: string;
 }
 
@@ -86,13 +85,16 @@ export async function initDb(db: D1Database): Promise<void> {
         is_best_seller INTEGER DEFAULT 0,
         is_amazon_choice INTEGER DEFAULT 0,
         bought_past_month INTEGER,
-        raw_json TEXT,
         scraped_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
       )
     `).run();
 
     await db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_buffer_asin ON scraper_buffer(asin, country)
+    `).run();
+
+    await db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_tracked_scraping ON tracked_products(last_scraped_at, updated_at)
     `).run();
 
     _dbInitialized = true;
@@ -120,7 +122,10 @@ export async function upsertTrackedProducts(
       )
       .bind(asin, country, p.title || null);
   });
-  await db.batch(stmts);
+  // D1 has a hard limit of 100 statements per batch
+  for (let i = 0; i < stmts.length; i += 50) {
+    await db.batch(stmts.slice(i, i + 50));
+  }
   return products.length;
 }
 
@@ -184,8 +189,8 @@ export async function insertScrapedBuffer(db: D1Database, row: ScraperBufferRow)
         asin, country, parent_code, title, brand, link, price, price_formatted, currency,
         rating, reviews_count, seller_name, seller_id, seller_link, is_fba, in_stock,
         image, image_count, bsr, bsr_category, is_best_seller, is_amazon_choice,
-        bought_past_month, raw_json, scraped_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+        bought_past_month, scraped_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
     )
     .bind(
       row.asin.toUpperCase().trim(),
@@ -210,8 +215,7 @@ export async function insertScrapedBuffer(db: D1Database, row: ScraperBufferRow)
       row.bsr_category || null,
       row.is_best_seller ? 1 : 0,
       row.is_amazon_choice ? 1 : 0,
-      row.bought_past_month ?? null,
-      row.raw_json || null
+      row.bought_past_month ?? null
     )
     .run();
 }
@@ -221,7 +225,10 @@ export async function consumeBuffer(db: D1Database): Promise<ScraperBufferRow[]>
   const selectRes = await db.prepare("SELECT * FROM scraper_buffer ORDER BY id ASC").all<ScraperBufferRow>();
   const rows = selectRes.results || [];
   if (rows.length > 0) {
-    await db.prepare("DELETE FROM scraper_buffer").run();
+    const maxId = rows[rows.length - 1].id;
+    if (maxId !== undefined && maxId !== null) {
+      await db.prepare("DELETE FROM scraper_buffer WHERE id <= ?").bind(maxId).run();
+    }
   }
   return rows;
 }

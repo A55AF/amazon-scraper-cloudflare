@@ -53,17 +53,25 @@ export class AmazonSession {
   }
 
   public storeCookies(responseHeaders: Headers) {
-    const rawSetCookies = responseHeaders.get("set-cookie");
-    if (!rawSetCookies) return;
+    let cookieStrings: string[] = [];
+    if (typeof (responseHeaders as any).getSetCookie === "function") {
+      cookieStrings = (responseHeaders as any).getSetCookie();
+    } else {
+      const rawSetCookies = responseHeaders.get("set-cookie");
+      if (!rawSetCookies) return;
+      // Split on commas that are not part of an HTTP date (e.g. Expires=Wed, 21-Oct-2026)
+      cookieStrings = rawSetCookies.split(/,(?!\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b)/i);
+    }
 
-    // Split multiple Set-Cookie headers if present
-    const cookieStrings = rawSetCookies.split(/,(?=[^;]+=[^;]+)/);
     for (const cookieStr of cookieStrings) {
-      const parts = cookieStr.split(";")[0].trim().split("=");
-      if (parts.length >= 2) {
-        const name = parts[0].trim();
-        const value = parts.slice(1).join("=").trim();
-        this.cookies.set(name, value);
+      const firstPart = cookieStr.split(";")[0].trim();
+      const eqIdx = firstPart.indexOf("=");
+      if (eqIdx > 0) {
+        const name = firstPart.slice(0, eqIdx).trim();
+        const value = firstPart.slice(eqIdx + 1).trim();
+        if (name && !name.toLowerCase().includes("expires") && !name.toLowerCase().includes("domain") && !name.toLowerCase().includes("path")) {
+          this.cookies.set(name, value);
+        }
       }
     }
   }
@@ -80,7 +88,18 @@ export class AmazonSession {
       }
     }
 
-    const response = await fetch(url, {
+    let fetchUrl = url;
+    if (this.proxy) {
+      if (this.proxy.includes("{url}")) {
+        fetchUrl = this.proxy.replace("{url}", encodeURIComponent(url));
+      } else if (this.proxy.includes("scraperapi.com") || this.proxy.includes("api.")) {
+        const u = new URL(this.proxy);
+        u.searchParams.set("url", url);
+        fetchUrl = u.toString();
+      }
+    }
+
+    const response = await fetch(fetchUrl, {
       ...init,
       headers
     });
@@ -137,6 +156,13 @@ export class AmazonFetcher {
       this.sessions.set(key, session);
     }
     return session;
+  }
+
+  public dropSession(country: string, language?: string | null): void {
+    const s = getSite(country);
+    const lang = language || s.language;
+    const key = `${s.country}:${lang}`;
+    this.sessions.delete(key);
   }
 
   public async warm(session: AmazonSession): Promise<void> {

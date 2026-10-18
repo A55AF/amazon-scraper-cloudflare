@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS scraper_buffer (
   is_best_seller INTEGER DEFAULT 0,
   is_amazon_choice INTEGER DEFAULT 0,
   bought_past_month INTEGER,
-  raw_json TEXT,
   scraped_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 

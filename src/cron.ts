@@ -13,7 +13,7 @@ export interface CronRunResult {
 export async function runScrapingCron(
   db: D1Database,
   fetcher?: AmazonFetcher,
-  batchSize = 8,
+  batchSize = 5,
   delayBetweenMs?: number
 ): Promise<CronRunResult> {
   const tracked = await getTrackedProductsForScraping(db, batchSize);
@@ -27,9 +27,9 @@ export async function runScrapingCron(
   for (let i = 0; i < tracked.length; i++) {
     const item = tracked[i];
 
-    // Add random jitter delay between requests to prevent burst bot-detection
+    // Add jitter delay between requests (500-1000ms) to prevent bot-detection without timing out worker
     if (i > 0) {
-      const waitMs = delayBetweenMs !== undefined ? delayBetweenMs : 1500 + Math.floor(Math.random() * 1000);
+      const waitMs = delayBetweenMs !== undefined ? delayBetweenMs : 500 + Math.floor(Math.random() * 500);
       if (waitMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
       }
@@ -48,12 +48,15 @@ export async function runScrapingCron(
       const row: ScraperBufferRow = {
         asin: item.asin,
         country: item.country || "EG",
-        parent_code: data.variations?.parent_asin || null,
+        parent_code: data.parent_asin || data.variations?.parent_asin || null,
         title: data.title || null,
         brand: data.brand?.name || null,
         link: data.link || null,
         price: data.price?.amount ?? null,
-        price_formatted: data.price?.amount ? `${data.price.amount} ${data.price.currency || ""}`.trim() : null,
+        price_formatted:
+          data.price?.amount !== null && data.price?.amount !== undefined
+            ? `${data.price.amount} ${data.price.currency || ""}`.trim()
+            : null,
         currency: data.price?.currency || null,
         rating: data.rating?.average ?? null,
         reviews_count: data.rating?.count ?? null,
@@ -67,9 +70,8 @@ export async function runScrapingCron(
         bsr: bsrEntry?.rank ?? null,
         bsr_category: bsrEntry?.category ?? null,
         is_best_seller: data.badges?.is_best_seller ? 1 : 0,
-        is_amazon_choice: data.badges?.is_amazons_choice ? 1 : 0,
-        bought_past_month: data.bought_past_month ?? null,
-        raw_json: JSON.stringify(data)
+        is_amazon_choice: (data.badges?.is_amazons_choice || (data.badges as any)?.is_amazon_choice) ? 1 : 0,
+        bought_past_month: data.bought_past_month ?? null
       };
 
       await insertScrapedBuffer(db, row);

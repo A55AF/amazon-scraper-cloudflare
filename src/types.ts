@@ -19,6 +19,8 @@ export interface Money {
   list_price?: number | null;
   list_price_type?: string | null;
   savings_percent?: number | null;
+  savings_amount?: number | null;
+  unit_price?: { amount: number | null; per: string | null } | null;
 }
 
 export interface Rating {
@@ -48,6 +50,7 @@ export interface Delivery {
 
 export interface ProductDetails {
   asin: string;
+  parent_asin?: string | null;
   title: string | null;
   link: string;
   brand: {
@@ -73,6 +76,7 @@ export interface ProductDetails {
   badges: {
     is_best_seller: boolean;
     is_amazons_choice: boolean;
+    is_amazon_choice?: boolean;
     best_seller_text: string | null;
     is_climate_pledge_friendly: boolean;
   };

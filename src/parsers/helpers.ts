@@ -5,16 +5,18 @@ const AMOUNT_START_RE = /\d[\d.,  \s]*/;
 const WS_RE = /\s+/g;
 const ASIN_RE = /\/(?:dp|gp\/product|gp\/aw\/d|product-reviews)\/([A-Z0-9]{10})(?:[/?]|$)/;
 const NODE_RE = /(?:node=|rh=n(?:%3A|:))(\d+)/;
-const RATING_RE = /(\d+(?:[.,]\d+)?)\s*(?:out of|von|sur|su|de|of)\s*5/i;
+const RATING_RE = /(\d+(?:[.,]\d+)?)\s*(?:out of|von|sur|su|de|of|من)\s*[5٥]/i;
 const COUNT_RE = /(\d[\d,.\s ]*)/;
 const PERCENT_RE = /(-?\d+(?:[.,]\d+)?)\s*%/;
-const BOUGHT_RE = /(\d+(?:[.,]\d+)?)\s*([KkMm])?\+?\s*(?:bought|purchased|gekauft|comprado|achetés|acquistato)/i;
+const BOUGHT_KEYWORD_RE = /(?:bought|purchased|gekauft|comprado|achetés|acquistato|تم شراء|تم شراؤها)/i;
+const BOUGHT_RE = /(?:(?:تم شراء|تم شراؤها)\s*(?:أكثر من\s*)?)?(\d+(?:[.,]\d+)?)\s*(K|M|ألف|k|m)?/i;
 const IMAGE_SIZE_RE = /\._[^./]+_(?=\.[a-z]+$)/;
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   "$": "USD", "US$": "USD", "£": "GBP", "€": "EUR", "₹": "INR", "¥": "JPY", "￥": "JPY",
   "C$": "CAD", "CDN$": "CAD", "A$": "AUD", "AU$": "AUD", "S$": "SGD", "R$": "BRL", "MX$": "MXN",
   "kr": "SEK", "zł": "PLN", "TL": "TRY", "AED": "AED", "SAR": "SAR", "EGP": "EGP", "R": "ZAR",
+  "ج.م.": "EGP", "ج.م": "EGP", "جنيه": "EGP", "ر.س": "SAR", "ريال": "SAR", "د.إ": "AED", "درهم": "AED",
   "SEK": "SEK", "PLN": "PLN", "USD": "USD", "EUR": "EUR", "GBP": "GBP", "INR": "INR", "JPY": "JPY",
   "CAD": "CAD", "AUD": "AUD", "SGD": "SGD", "BRL": "BRL", "MXN": "MXN", "TRY": "TRY", "ZAR": "ZAR"
 };
@@ -36,12 +38,21 @@ const MONTH_NAMES: Record<string, string> = {
   december: "12", dec: "12"
 };
 
+export function normalizeArabicNumerals(str?: string | null): string {
+  if (!str) return "";
+  return String(str)
+    .replace(/[٠-٩]/g, (d) => "0123456789"[d.charCodeAt(0) - 1632])
+    .replace(/[۰-۹]/g, (d) => "0123456789"[d.charCodeAt(0) - 1776])
+    .replace(/٫/g, ".")
+    .replace(/٬/g, ",");
+}
+
 export function clean(value?: any): string | null {
   if (value === null || value === undefined) {
     return null;
   }
   let str = String(value)
-    .replace(/[‏‎‌​]/g, "") // zero-width marks
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "") // zero-width marks and bidi overrides
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -57,7 +68,7 @@ export function parseAmount(text?: any): number | null {
   if (!text) {
     return null;
   }
-  const str = String(text);
+  const str = normalizeArabicNumerals(String(text));
   const m = str.match(AMOUNT_START_RE);
   if (!m || m.index === undefined) {
     return null;
@@ -109,7 +120,8 @@ export function toInt(value?: any): number | null {
   if (typeof value === "number") {
     return Math.floor(value);
   }
-  const match = String(value).match(COUNT_RE);
+  const norm = normalizeArabicNumerals(String(value));
+  const match = norm.match(COUNT_RE);
   if (!match) {
     return null;
   }
@@ -122,7 +134,8 @@ export function toFloat(value?: any, digits: number = 2): number | null {
     return null;
   }
   try {
-    const num = parseFloat(String(value).replace(",", "."));
+    const norm = normalizeArabicNumerals(String(value));
+    const num = parseFloat(norm.replace(",", "."));
     if (isNaN(num)) {
       return null;
     }
@@ -137,7 +150,7 @@ export function ratingOf(value?: any): number | null {
   if (value === null || value === undefined) {
     return null;
   }
-  const str = String(value);
+  const str = normalizeArabicNumerals(String(value));
   const match = str.match(RATING_RE);
   if (match) {
     return toFloat(match[1], 1);
@@ -150,7 +163,8 @@ export function percentOf(value?: any): number | null {
   if (value === null || value === undefined) {
     return null;
   }
-  const match = String(value).match(PERCENT_RE);
+  const norm = normalizeArabicNumerals(String(value));
+  const match = norm.match(PERCENT_RE);
   return match ? toFloat(match[1], 1) : null;
 }
 
@@ -232,19 +246,28 @@ export function boughtPastMonth(value?: any): number | null {
   if (!value) {
     return null;
   }
-  const match = String(value).match(BOUGHT_RE);
+  const str = String(value);
+  if (!BOUGHT_KEYWORD_RE.test(str)) {
+    return null;
+  }
+  const norm = normalizeArabicNumerals(str);
+  const match = norm.match(BOUGHT_RE);
   if (!match) {
     return null;
   }
   const number = toFloat(match[1], 2) || 0;
   const unit = (match[2] || "").toUpperCase();
-  const multiplier = unit === "K" ? 1000 : unit === "M" ? 1000000 : 1;
+  const multiplier = unit === "K" || unit === "ألف" ? 1000 : unit === "M" ? 1000000 : 1;
   return Math.floor(number * multiplier);
 }
 
 export function snake(label?: string | null): string | null {
   const c = clean(label) || "";
-  const s = c.replace(/&/g, "and").replace(/[^\w]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  const s = c
+    .replace(/&/g, "and")
+    .replace(/[^\p{L}\p{N}]+/gu, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
   const res = s.replace(/_+/g, "_");
   return res || null;
 }

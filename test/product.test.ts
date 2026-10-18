@@ -117,4 +117,21 @@ describe("product parser", () => {
     expect(d.details?.metal_type).toBe("14k gold plated");
     expect(Boolean(d.brand?.name)).toBe(true);
   });
+
+  it("parses in_dp_B0GWQHQB4T without leaking JSON into badges", () => {
+    const d = parseProductPage(raw("in_dp_B0GWQHQB4T.html"), site("IN"));
+    expect(d.asin).toBe("B0GWQHQB4T");
+    expect(d.title?.includes("HP 15")).toBe(true);
+    expect(d.price?.amount).toBe(82990);
+    expect(d.price?.currency).toBe("INR");
+    expect(d.rating?.average).toBe(3.8);
+    expect(d.rating?.count).toBe(93);
+    // Crucial check: best_seller_text must NEVER contain script JSON like {"acAsin"...}
+    if (d.badges.best_seller_text) {
+      expect(d.badges.best_seller_text.startsWith("{")).toBe(false);
+      expect(d.badges.best_seller_text.includes("acAsin")).toBe(false);
+    }
+    expect(typeof d.badges.is_amazons_choice).toBe("boolean");
+    expect(typeof d.badges.is_amazon_choice).toBe("boolean");
+  });
 });

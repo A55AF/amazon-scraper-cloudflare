@@ -17,12 +17,21 @@ function createMockD1(): any {
         },
         run: async () => {
           if (sql.includes("DELETE FROM scraper_buffer")) {
+            if (sql.includes("WHERE id <=")) {
+              const maxId = boundParams[0];
+              const remaining = buffer.filter((item) => (item.id || 0) > maxId);
+              const removed = buffer.length - remaining.length;
+              buffer.length = 0;
+              buffer.push(...remaining);
+              return { meta: { changes: removed } };
+            }
             const count = buffer.length;
             buffer.length = 0;
             return { meta: { changes: count } };
           }
           if (sql.includes("INSERT INTO scraper_buffer")) {
             buffer.push({
+              id: buffer.length + 1,
               asin: boundParams[0],
               country: boundParams[1],
               title: boundParams[3],
@@ -81,6 +90,16 @@ describe("D1 API Endpoints & Auth", () => {
     });
     const resp3 = await worker.fetch(reqWithGoodKey, env, {} as any);
     expect(resp3.status).toBe(200);
+
+    // Verify /products/details requires key when MORAQEB_API_KEY is configured
+    const unauthProduct = new Request("http://localhost/products/details?product=B001");
+    const resp4 = await worker.fetch(unauthProduct, env, {} as any);
+    expect(resp4.status).toBe(401);
+
+    // Verify /health is public even with MORAQEB_API_KEY configured
+    const healthReq = new Request("http://localhost/health");
+    const resp5 = await worker.fetch(healthReq, env, {} as any);
+    expect(resp5.status).toBe(200);
   });
 
   it("handles /api/buffer/consume and flushes buffer", async () => {

@@ -30,6 +30,12 @@ export function parseProductPage(htmlText: string, site: SiteConfig): ProductDet
     htmlText.match(/data-asin="([A-Z0-9]{10})"/);
   const asin = currentAsinMatch ? currentAsinMatch[1] : "";
 
+  const parentAsinMatch =
+    htmlText.match(/"parentAsin"\s*:\s*"([A-Z0-9]{10})"/) ||
+    htmlText.match(/id="parentAsin"\s+value="([A-Z0-9]{10})"/) ||
+    htmlText.match(/name="parentAsin"\s+value="([A-Z0-9]{10})"/);
+  const parentAsin = parentAsinMatch ? parentAsinMatch[1] : null;
+
   // Details rows
   const detailsRaw: Record<string, string> = {};
   $(
@@ -153,12 +159,16 @@ export function parseProductPage(htmlText: string, site: SiteConfig): ProductDet
     }
   });
 
-  // Badges
+  // Badges (strip <script> and <style> tags so JSON state never leaks into badge text)
   const badgeEls = $("#zeitgeistBadge_feature_div, #acBadge_feature_div, .badge-wrapper");
   const badgeTexts: string[] = [];
   badgeEls.each((_, el) => {
-    const t = clean($(el).text());
-    if (t) badgeTexts.push(t);
+    const $clone = $(el).clone();
+    $clone.find("script, style").remove();
+    const t = clean($clone.text());
+    if (t && !t.startsWith("{") && !t.endsWith("}")) {
+      badgeTexts.push(t);
+    }
   });
   const badgeCombined = badgeTexts.join(" ");
   const badgeLow = badgeCombined.toLowerCase();
@@ -191,6 +201,7 @@ export function parseProductPage(htmlText: string, site: SiteConfig): ProductDet
 
   return {
     asin,
+    parent_asin: parentAsin,
     title: clean($("#productTitle").first().text()) || clean($("#title").first().text()),
     link: productLink(site, asin),
     brand,
@@ -211,8 +222,9 @@ export function parseProductPage(htmlText: string, site: SiteConfig): ProductDet
         : null,
     bought_past_month: boughtPastMonth($("#social-proofing-faceout-title-tk_bought").first().text()),
     badges: {
-      is_best_seller: badgeLow.includes("best seller"),
-      is_amazons_choice: badgeLow.includes("amazon's choice"),
+      is_best_seller: badgeLow.includes("best seller") || badgeLow.includes("الأكثر مبيعاً"),
+      is_amazons_choice: badgeLow.includes("amazon's choice") || badgeLow.includes("اختيار أمازون") || htmlText.includes('"acAsin"'),
+      is_amazon_choice: badgeLow.includes("amazon's choice") || badgeLow.includes("اختيار أمازون") || htmlText.includes('"acAsin"'),
       best_seller_text: clean(badgeCombined),
       is_climate_pledge_friendly: $("#climatePledgeFriendly, #climatePledgeFriendlyBadge").length > 0
     },
@@ -227,7 +239,7 @@ export function parseProductPage(htmlText: string, site: SiteConfig): ProductDet
     })(),
     details: Object.keys(details).length > 0 ? details : null,
     identifiers: Object.keys(identifiers).length > 0 ? identifiers : null,
-    images: parseImages(htmlText),
+    images: parseImages(htmlText, $, asin),
     videos,
     videos_count: videosCount,
     variations: parseVariations(htmlText, site),
@@ -272,8 +284,8 @@ function parseByline($: cheerio.CheerioAPI, site: SiteConfig): {
     }
   });
 
-  let name = label.replace(/^(Visit the|Brand:|Marke:|Marca:|Marque\s*:)\s*/i, "");
-  name = name.replace(/\s+Store$/i, "").trim() || "";
+  let name = label.replace(/^(Visit the|Brand:|Marke:|Marca:|Marque\s*:|قم بزيارة متجر|العلامة التجارية:?|المتجر:?)\s*/i, "");
+  name = name.replace(/\s+(Store|متجر)$/i, "").trim() || "";
 
   let brand: any = null;
   if (href && href.includes("/stores/")) {
@@ -289,7 +301,7 @@ function parseByline($: cheerio.CheerioAPI, site: SiteConfig): {
 
 function parseBestSellersRank($: cheerio.CheerioAPI, site: SiteConfig): any[] {
   let matchedEl: cheerio.Cheerio<any> | null = null;
-  const bsrRegex = /Best[- ]?Sellers? Rank|Bestseller-Rang|Classement des meilleures|Posizione nella|Clasificación/i;
+  const bsrRegex = /Best[- ]?Sellers? Rank|Bestseller-Rang|Classement des meilleures|Posizione nella|Clasificación|الأكثر مبيعاً|المركز/i;
 
   $("*").each((_, el) => {
     if (matchedEl) return;
@@ -322,7 +334,7 @@ function parseBestSellersRank($: cheerio.CheerioAPI, site: SiteConfig): any[] {
   });
 
   const ranks: any[] = [];
-  const regex = /#?\s*([\d,. ]+)\s+(?:in|en|dans|su)\s+([^(#]+?)(?=\s*\(|\s*#|$)/g;
+  const regex = /#?\s*([\d,. ]+)\s+(?:in|en|dans|in der|su|في)\s+([^(#]+?)(?=\s*\(|\s*#|$)/g;
   let m: RegExpExecArray | null;
   while ((m = regex.exec(block)) !== null) {
     const rank = toInt(m[1]);
@@ -411,40 +423,118 @@ function parseVariations(htmlText: string, site: SiteConfig): any {
   };
 }
 
-function parseImages(htmlText: string): any[] {
-  const colorImages = jsonAfter(htmlText, '"colorImages"');
+function parseImages(htmlText: string, $?: cheerio.CheerioAPI, asin?: string): any[] {
   const images: any[] = [];
   const seen = new Set<string>();
 
-  if (colorImages && typeof colorImages === "object") {
-    const groups = colorImages.initial ? [colorImages.initial] : Object.values(colorImages);
-    for (const group of groups as any[][]) {
-      if (!Array.isArray(group)) continue;
-      for (const entry of group) {
-        const link = entry.hiRes || entry.large;
-        if (!link || seen.has(link)) continue;
-        seen.add(link);
-        images.push({
-          link,
-          thumbnail: entry.thumb || null,
-          large: entry.large || null,
-          variant: entry.variant || null
-        });
+  function addImage(
+    link: string | null | undefined,
+    thumb: string | null = null,
+    large: string | null = null,
+    variant: string | null = null
+  ) {
+    if (!link || typeof link !== "string") return;
+    if (seen.has(link)) return;
+    if (link.includes("play-button") || link.includes("transparent-pixel") || link.includes("sprite") || link.includes("icon")) {
+      return;
+    }
+    seen.add(link);
+    images.push({
+      link,
+      thumbnail: thumb || null,
+      large: large || link,
+      variant: variant || null
+    });
+  }
+
+  // 1. Direct Cheerio DOM extraction for the active landing image
+  let landingUrl: string | null = null;
+  if ($) {
+    const landingEl = $("#landingImage, #imgBlkFront, #main-image, #ebooks-img-canvas img").first();
+    if (landingEl.length) {
+      const oldHires = landingEl.attr("data-old-hires");
+      if (oldHires && oldHires.trim()) {
+        landingUrl = oldHires.trim();
+      }
+
+      if (!landingUrl) {
+        const dyn = landingEl.attr("data-a-dynamic-image");
+        if (dyn) {
+          try {
+            const parsed = JSON.parse(dyn);
+            let maxPx = 0;
+            let bestUrl: string | null = null;
+            for (const [url, dims] of Object.entries(parsed)) {
+              const px = Array.isArray(dims) && dims.length === 2 ? Number(dims[0]) * Number(dims[1]) : 0;
+              if (px > maxPx) {
+                maxPx = px;
+                bestUrl = url;
+              }
+            }
+            if (bestUrl) landingUrl = bestUrl;
+          } catch (_) {}
+        }
+      }
+
+      if (!landingUrl) {
+        const src = landingEl.attr("src");
+        if (src && !src.includes("data:image")) {
+          landingUrl = src.trim();
+        }
       }
     }
   }
 
+  // If landingUrl was found, add it as MAIN at index 0
+  if (landingUrl) {
+    addImage(landingUrl, null, landingUrl, "MAIN");
+  }
+
+  // 2. Color/Variant images from embedded JSON
+  const colorImages = jsonAfter(htmlText, '"colorImages"');
+  if (colorImages && typeof colorImages === "object") {
+    let selectedGroup: any[] | null = null;
+    if (Array.isArray(colorImages.initial)) {
+      selectedGroup = colorImages.initial;
+    } else if (asin && Array.isArray((colorImages as any)[asin])) {
+      selectedGroup = (colorImages as any)[asin];
+    } else {
+      for (const [, v] of Object.entries(colorImages)) {
+        if (Array.isArray(v)) {
+          selectedGroup = v;
+          break;
+        }
+      }
+    }
+
+    if (selectedGroup && Array.isArray(selectedGroup)) {
+      for (const entry of selectedGroup) {
+        const link = entry.hiRes || entry.large;
+        addImage(link, entry.thumb || null, entry.large || null, entry.variant || null);
+      }
+    }
+  }
+
+  // 3. Fallback: Cheerio altImages gallery
+  if ($ && images.length <= 1) {
+    $("#altImages ul li.item:not(.video) img, #imageBlock .regularAltImageViewLayout img").each((_, img) => {
+      const el = $(img);
+      if (el.closest(".swatchAvailable, #variation_color_name").length) return;
+      const raw = el.attr("data-old-hires") || el.attr("src") || el.attr("data-src");
+      if (raw) {
+        const hiRes = raw.replace(/\._[A-Z0-9_,-]+_\./, "._AC_SL1500_.");
+        addImage(hiRes, raw, hiRes, "PT");
+      }
+    });
+  }
+
+  // 4. Fallback string regex if Cheerio wasn't passed or no images found
   if (images.length === 0) {
     const landingMatch =
       htmlText.match(/id="landingImage"[^>]*\sdata-old-hires="([^"]+)"/) ||
       htmlText.match(/id="landingImage"[^>]*\ssrc="([^"]+)"/);
     if (landingMatch) {
-      images.push({
-        link: landingMatch[1],
-        thumbnail: null,
-        large: landingMatch[1],
-        variant: "MAIN"
-      });
+      addImage(landingMatch[1], null, landingMatch[1], "MAIN");
     }
   }
 
@@ -648,14 +738,14 @@ function parseBuybox($: cheerio.CheerioAPI, site: SiteConfig): Buybox | null {
   $("#tabular-buybox [tabular-attribute-name]").each((_, cell) => {
     const label = ($(cell).attr("tabular-attribute-name") || "").toLowerCase();
     const val = clean($(cell).find(".tabular-buybox-text-message").first().text()) || clean($(cell).text());
-    if (label.includes("ships from") || label.includes("dispatches from")) {
+    if (label.includes("ships from") || label.includes("dispatches from") || label.includes("يشحن من") || label.includes("الشحن من")) {
       shipsFrom = shipsFrom || val;
-    } else if (label.includes("sold by")) {
+    } else if (label.includes("sold by") || label.includes("يباع من") || label.includes("بيع من قبل")) {
       soldBy = soldBy || val;
     }
   });
 
-  const bothMatch = merchant.match(/Shipper\s*\/\s*Seller\s+(.+?)(?:\s+Shipper|\s*$)/);
+  const bothMatch = merchant.match(/(?:Shipper\s*\/\s*Seller|الشاحن\s*\/\s*البائع)\s+(.+?)(?:\s+Shipper|\s+الشاحن|\s*$)/i);
   if (bothMatch) {
     let name = clean(bothMatch[1]);
     if (name) {
@@ -668,11 +758,11 @@ function parseBuybox($: cheerio.CheerioAPI, site: SiteConfig): Buybox | null {
     soldBy = soldBy || name;
   }
 
-  const shipsMatch = merchant.match(/(?:Ships from|Dispatches from)\s*:?\s*(.+?)(?=\s+Sold by|\s*\.|\s*$)/);
+  const shipsMatch = merchant.match(/(?:Ships from|Dispatches from|يشحن من|الشحن من)\s*:?\s*(.+?)(?=\s+Sold by|\s+يباع من|\s*\.|\s*$)/i);
   if (shipsMatch && !shipsFrom) {
     shipsFrom = clean(shipsMatch[1]);
   }
-  const soldMatch = merchant.match(/Sold by\s*:?\s*(.+?)(?:\s+and\s+Fulfilled|\s*\.|$)/);
+  const soldMatch = merchant.match(/(?:Sold by|يباع من قبل|يباع من)\s*:?\s*(.+?)(?:\s+and\s+Fulfilled|\s+و\s+تشحن|\s*\.|$)/i);
   if (soldMatch && !soldBy) {
     soldBy = clean(soldMatch[1]);
   }
@@ -693,6 +783,10 @@ function parseBuybox($: cheerio.CheerioAPI, site: SiteConfig): Buybox | null {
     return null;
   }
 
+  const merchantLow = merchant.toLowerCase();
+  const shipsFromLow = (shipsFrom || "").toLowerCase();
+  const soldByLow = (soldBy || "").toLowerCase();
+
   return {
     seller: soldBy
       ? {
@@ -702,8 +796,12 @@ function parseBuybox($: cheerio.CheerioAPI, site: SiteConfig): Buybox | null {
         }
       : null,
     ships_from: shipsFrom,
-    is_fulfilled_by_amazon: merchant.toLowerCase().includes("fulfilled by amazon") || (shipsFrom || "").toLowerCase().startsWith("amazon"),
-    is_sold_by_amazon: (soldBy || "").toLowerCase().startsWith("amazon")
+    is_fulfilled_by_amazon:
+      merchantLow.includes("fulfilled by amazon") ||
+      shipsFromLow.startsWith("amazon") ||
+      merchant.includes("أمازون") ||
+      (shipsFrom || "").includes("أمازون"),
+    is_sold_by_amazon: soldByLow.startsWith("amazon") || (soldBy || "").includes("أمازون")
   };
 }
 
@@ -715,26 +813,28 @@ function parseAvailability($: cheerio.CheerioAPI): { text: string | null; is_in_
   }
   const low = status.toLowerCase();
   let inStock = false;
-  if (["in stock", "only", "usually ships", "available", "verfügbar", "en stock", "disponible"].some(k => low.includes(k))) {
+  if (["in stock", "only", "usually ships", "available", "verfügbar", "en stock", "disponible", "متوفر", "متبقي", "جاهز للشحن"].some(k => low.includes(k))) {
     inStock = true;
   }
-  if (["unavailable", "out of stock", "not available", "nicht verfügbar", "indisponible"].some(k => low.includes(k))) {
+  if (["unavailable", "out of stock", "not available", "nicht verfügbar", "indisponible", "غير متوفر", "غير متاح"].some(k => low.includes(k))) {
     inStock = false;
   }
-  const leftMatch = low.match(/only\s+(\d+)\s+left/);
+  const leftMatch = low.match(/(?:only\s+(\d+)\s+left|متبقي\s+(\d+)\s+فقط)/i);
   return {
     text: status,
     is_in_stock: inStock,
-    quantity_left: leftMatch ? toInt(leftMatch[1]) : null
+    quantity_left: leftMatch ? toInt(leftMatch[1] || leftMatch[2]) : null
   };
 }
 
 function parsePrice($: cheerio.CheerioAPI, currency: string): Money | null {
   const scopes = [
     $("#apex_desktop"),
+    $("#apex_desktop_feature_div"),
     $("#corePriceDisplay_desktop_feature_div"),
     $("#corePrice_feature_div"),
     $("#corePrice_desktop"),
+    $("#tp_price_block_total_price_ww"),
     $("#price"),
     $("#buybox")
   ];
@@ -746,12 +846,29 @@ function parsePrice($: cheerio.CheerioAPI, currency: string): Money | null {
   for (const scope of scopes) {
     if (!scope.length) continue;
     const cur = scope.find(".priceToPay .a-offscreen, .apexPriceToPay .a-offscreen, .a-price:not([data-a-strike=true]) .a-offscreen").first();
-    const offscreen = cur.length ? cur : scope.find(".aok-offscreen").first();
+    const offscreen = cur.length ? cur : scope.find(".aok-offscreen, .priceBlockBuyingPriceString, #priceblock_ourprice, #priceblock_dealprice").first();
     if (offscreen.length && amountOf(clean(offscreen.text())) !== null) {
       currentEl = offscreen;
       strikeEl = scope.find(".basisPrice .a-offscreen, [data-a-strike=true] .a-offscreen, .a-text-price .a-offscreen").first();
       foundScope = scope;
       break;
+    }
+  }
+
+  // Fallback: check whole and fraction if no offscreen matched
+  if (!currentEl) {
+    for (const scope of scopes) {
+      if (!scope.length) continue;
+      const whole = scope.find(".a-price-whole").first();
+      const fraction = scope.find(".a-price-fraction").first();
+      if (whole.length) {
+        const assembled = `${whole.text().trim()}.${fraction.length ? fraction.text().trim() : "00"}`;
+        if (amountOf(assembled) !== null) {
+          currentEl = whole;
+          foundScope = scope;
+          break;
+        }
+      }
     }
   }
 
@@ -776,6 +893,16 @@ function parsePrice($: cheerio.CheerioAPI, currency: string): Money | null {
   } else {
     block.savings_percent = null;
   }
+
+  if (block.amount && block.list_price && block.list_price > block.amount) {
+    block.savings_amount = Math.round((block.list_price - block.amount) * 100) / 100;
+  } else {
+    block.savings_amount = null;
+  }
+
+  const unit = clean(foundScope.find(".pricePerUnit, #pricePerUnit").first().text()) || "";
+  const unitMatch = unit.match(/\(?\s*([^()/]*?\d[^()/]*?)\s*\/\s*([^()]+?)\s*\)?$/);
+  block.unit_price = unitMatch ? { amount: amountOf(unitMatch[1]), per: clean(unitMatch[2]) } : null;
 
   if (block.amount === null && block.list_price === null) {
     return null;
