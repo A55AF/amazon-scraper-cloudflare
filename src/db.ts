@@ -137,17 +137,19 @@ export async function getTrackedProducts(db: D1Database): Promise<TrackedProduct
 
 export async function getTrackedProductsForScraping(
   db: D1Database,
-  limit = 8
+  limit = 5,
+  minIntervalHours = 3
 ): Promise<TrackedProductRow[]> {
   await initDb(db);
   const result = await db
     .prepare(
       `SELECT asin, country, title, added_at, updated_at, last_scraped_at 
        FROM tracked_products 
+       WHERE last_scraped_at IS NULL OR last_scraped_at <= datetime('now', '-' || ? || ' hours')
        ORDER BY last_scraped_at ASC NULLS FIRST, updated_at DESC 
        LIMIT ?`
     )
-    .bind(limit)
+    .bind(minIntervalHours, limit)
     .all<TrackedProductRow>();
   return result.results || [];
 }

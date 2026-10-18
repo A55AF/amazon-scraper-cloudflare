@@ -14,9 +14,10 @@ export async function runScrapingCron(
   db: D1Database,
   fetcher?: AmazonFetcher,
   batchSize = 5,
-  delayBetweenMs?: number
+  delayBetweenMs?: number,
+  minIntervalHours = 3
 ): Promise<CronRunResult> {
-  const tracked = await getTrackedProductsForScraping(db, batchSize);
+  const tracked = await getTrackedProductsForScraping(db, batchSize, minIntervalHours);
   const result: CronRunResult = {
     total: tracked.length,
     scraped: 0,

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { insertScrapedBuffer, consumeBuffer, ScraperBufferRow } from "../src/db";
+import {
+  getTrackedProductsForScraping,
+  insertScrapedBuffer,
+  consumeBuffer,
+  ScraperBufferRow
+} from "../src/db";
 import { runScrapingCron } from "../src/cron";
 import { AmazonFetcher } from "../src/fetcher";
 
@@ -59,6 +64,20 @@ function createMockD1(): any {
             buffer.push(row);
             return { meta: { changes: 1 } };
           }
+          if (sql.includes("INSERT INTO tracked_products")) {
+            const asin = boundParams[0];
+            const country = boundParams[1] || "EG";
+            const lastScraped = boundParams[2] || null;
+            tracked.set(`${asin}_${country}`, {
+              asin,
+              country,
+              title: null,
+              added_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              last_scraped_at: lastScraped
+            });
+            return { meta: { changes: 1 } };
+          }
           return { meta: { changes: 1 } };
         },
         all: async () => {
@@ -66,6 +85,24 @@ function createMockD1(): any {
             return { results: [...buffer] };
           }
           if (sql.includes("FROM tracked_products")) {
+            if (sql.includes("last_scraped_at IS NULL OR last_scraped_at <=")) {
+              const minHours = boundParams[0] ?? 3;
+              const limit = boundParams[1] ?? 5;
+              const cutoff = new Date(Date.now() - minHours * 3600 * 1000).toISOString();
+              const eligible = Array.from(tracked.values()).filter((p: any) => {
+                if (!p.last_scraped_at) return true;
+                return p.last_scraped_at <= cutoff;
+              });
+              eligible.sort((a: any, b: any) => {
+                if (!a.last_scraped_at && b.last_scraped_at) return -1;
+                if (a.last_scraped_at && !b.last_scraped_at) return 1;
+                if (a.last_scraped_at && b.last_scraped_at) {
+                  return a.last_scraped_at.localeCompare(b.last_scraped_at);
+                }
+                return 0;
+              });
+              return { results: eligible.slice(0, limit) };
+            }
             return { results: Array.from(tracked.values()) };
           }
           return { results: [] };
@@ -124,4 +161,37 @@ describe("cron & buffer pipeline", () => {
     expect(secondConsume.length).toBe(1);
     expect(secondConsume[0].asin).toBe("B003");
   });
+
+  it("selects only products not scraped within the last 3 hours (or never scraped)", async () => {
+    const mockDb = createMockD1();
+
+    // 1. Never scraped -> eligible
+    await mockDb
+      .prepare("INSERT INTO tracked_products (asin, country, last_scraped_at) VALUES (?, ?, ?)")
+      .bind("NEVER_SCRAPED", "EG", null)
+      .run();
+
+    // 2. Scraped 4 hours ago -> eligible
+    const fourHoursAgo = new Date(Date.now() - 4 * 3600 * 1000).toISOString();
+    await mockDb
+      .prepare("INSERT INTO tracked_products (asin, country, last_scraped_at) VALUES (?, ?, ?)")
+      .bind("SCRAPED_4H_AGO", "EG", fourHoursAgo)
+      .run();
+
+    // 3. Scraped 15 minutes ago -> NOT eligible
+    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    await mockDb
+      .prepare("INSERT INTO tracked_products (asin, country, last_scraped_at) VALUES (?, ?, ?)")
+      .bind("SCRAPED_15M_AGO", "EG", fifteenMinsAgo)
+      .run();
+
+    // Query with default 3 hours limit 5
+    const products = await getTrackedProductsForScraping(mockDb, 5, 3);
+    expect(products.map((p: any) => p.asin)).toEqual(["NEVER_SCRAPED", "SCRAPED_4H_AGO"]);
+
+    // If threshold is 5 hours, 4h ago is excluded so only NEVER_SCRAPED is returned
+    const filteredOut = await getTrackedProductsForScraping(mockDb, 5, 5);
+    expect(filteredOut.map((p: any) => p.asin)).toEqual(["NEVER_SCRAPED"]);
+  });
 });
+
