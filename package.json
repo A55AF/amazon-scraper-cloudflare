@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "bundle": "wrangler deploy --dry-run --outdir out",
     "build": "tsc",
     "test": "vitest run"
   },

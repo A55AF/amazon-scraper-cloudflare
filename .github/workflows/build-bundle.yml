@@ -1,0 +1,46 @@
+name: Build Scraper Worker Bundle
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'wrangler.jsonc'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Compile Worker Bundle
+        run: npx wrangler deploy --dry-run --outdir out
+
+      - name: Commit and Push out/index.js
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add out/index.js out/index.js.map out/README.md
+          if git diff --staged --quiet; then
+            echo "No changes in built bundle"
+          else
+            git commit -m "chore: auto-build worker bundle [skip ci]"
+            git push
+          fi
