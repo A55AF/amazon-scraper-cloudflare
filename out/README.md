@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "amazon-scraper-cloudflare" generated at 2026-10-21T20:39:06.737Z.
